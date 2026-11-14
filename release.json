@@ -1,0 +1,11 @@
+{
+  "version": "0.6.0",
+  "current": {
+    "protocol": "0.4.0",
+    "modelProvider": "0.4.0",
+    "bridge": "ifsoul-bridge/0.4.0",
+    "bridgeResourcePolicy": "ifsoul-bridge-resource-policy/0.4.0",
+    "appResourcePolicy": "ifsoul-app-resource-policy/0.4.0",
+    "appMemory": "ifsoul-app-memory/0.4.0"
+  }
+}
