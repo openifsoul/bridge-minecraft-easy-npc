@@ -1,9 +1,33 @@
 # IfSoul Easy NPC bridge
 
 Bridge for Minecraft Java 1.21.1, NeoForge 21.1.235,
-JDK 21 and [Easy NPC 6.0.2](https://modrinth.com/mod/easy-npc/version/elDSzpA0). Native private dialogue and the Desktop pairing handshake were verified on the listed NeoForge/Easy NPC versions. The operator selects one
-player and one NPC. A right-click followed by `/ifsoul-easynpc <text>`
-sends a private line. The host mod retains all NPC mechanics.
+JDK 21 and [Easy NPC 6.0.2](https://modrinth.com/mod/easy-npc/version/elDSzpA0).
+The operator selects one player and one NPC. Right-click the selected NPC
+and use `/ifsoul-easynpc <text>` to send a private line.
+
+A compatible NeoForge client and the unchanged bridge JAR were used to
+verify pairing, private dialogue delivered in game and recorded in App,
+native approach, cancellation and stop, grant revocation, and pairing
+again after restart without replay. The test used an isolated offline
+player and a deterministic provider.
+
+## Optional movement
+
+Enable `game-actions=true` and issue a new App movement grant for the selected
+player and NPC. The player must own the NPC. The NPC must have a configured
+Easy NPC travel objective such as Random Stroll, and ground navigation must
+be idle at the first interaction for movement to appear as active in App.
+Re-pair after changing the NPC setup.
+
+The approach uses one temporary MOVE goal and the host's pathfinding. Stock
+safety, combat and return-home goals retain precedence. The bridge reports
+arrival, interruption or expiry and removes its goal. Use
+`/ifsoul-easynpc stop` or `/ifsoul-easynpc wait` to cancel a pending or running approach.
+
+During movement, the bridge normally re-checks the App grant once per
+second. The service round trip adds to that interval. A short movement can
+finish before the next check, and App rejects outcomes sent with a revoked
+grant.
 
 ## Build
 
@@ -39,7 +63,7 @@ Renew the code after restart or grant expiration.
 | Bind | One service grant for the exact server-authoritative player and Easy NPC NPC. |
 | Interact | Right-click the selected NPC, then use `/ifsoul-easynpc <text>` in the same world within eight blocks. The bridge checks the target again before replying. |
 | Reply | Bounded private text to the approved player. Disconnect, world change and server shutdown invalidate pending delivery. |
-| Game control | NPC life, movement, pathfinding, combat and game permissions stay with the host. Group dialogue, autonomous actions and public chat are outside this bridge's scope. |
+| Game control | Easy NPC owns movement, pathfinding and combat. The opt-in action is one bounded approach to the selected player’s location. |
 
 In IfSoul **Games → Configure Minecraft**, choose the matching server software
 and bridge. Select the character, memory and provider and enter the player and

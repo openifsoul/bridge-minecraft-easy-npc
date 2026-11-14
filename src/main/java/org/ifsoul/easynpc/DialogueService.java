@@ -1,5 +1,6 @@
 package org.ifsoul.easynpc;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.IOException;
@@ -9,6 +10,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -20,9 +22,18 @@ final class DialogueService {
         .build();
     private String code;
     private String token;
+    private boolean actionGrant;
     private final String npcId;
+    private final Set<String> capabilities;
+
+    record Decision(UUID id, String speech, String choice) {}
 
     DialogueService(String address, String code, String npcId) {
+        this(address, code, npcId, Set.of());
+    }
+
+    DialogueService(String address, String code, String npcId, Set<String> capabilities) {
+        this.capabilities = Set.copyOf(capabilities);
         origin = URI.create(address);
         if (origin.getHost() == null || origin.getRawUserInfo() != null
             || !origin.getRawPath().isEmpty() || origin.getRawQuery() != null
@@ -40,6 +51,68 @@ final class DialogueService {
 
     synchronized String converse(UUID player, String name, String text)
         throws IOException, InterruptedException {
+        return decide(player, name, text, Map.of()).speech();
+    }
+
+    synchronized Decision decide(UUID player, String name, String text, Map<String, String> options)
+        throws IOException, InterruptedException {
+        ensurePaired(player, name, !options.isEmpty());
+        UUID request = UUID.randomUUID();
+        var body = new JsonObject();
+        body.addProperty("requestId", request.toString());
+        body.addProperty("text", text);
+        boolean actionTurn = !options.isEmpty() && checkActions();
+        if (actionTurn) {
+            body.addProperty("operation", "decide");
+            var choices = new JsonArray();
+            choices.add(choice("none", "Reply without taking any action"));
+            options.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> choices.add(choice(entry.getKey(), entry.getValue())));
+            body.add("choices", choices);
+        }
+        var response = post("dialogue", body, token, 62);
+        String choice = actionTurn ? string(response, "choiceId") : "none";
+        if (!"none".equals(choice) && !options.containsKey(choice)) {
+            throw new IOException("Invalid action choice.");
+        }
+        String line = string(response, "speech");
+        return new Decision(request, safeText(line, 180) && !line.stripLeading().startsWith("/") ? line : "", choice);
+    }
+
+    synchronized boolean checkActions() throws IOException, InterruptedException {
+        if (token == null || !actionGrant) return false;
+        var body = new JsonObject();
+        body.addProperty("operation", "action-check");
+        var value = post("dialogue", body, token, 10).get("authorized");
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean()
+            && value.getAsBoolean();
+    }
+
+    synchronized void outcome(UUID id, String action, String result) throws IOException, InterruptedException {
+        var body = new JsonObject();
+        body.addProperty("operation", "action-outcome");
+        body.addProperty("id", id.toString());
+        body.addProperty("action", action);
+        body.addProperty("result", result);
+        post("dialogue", body, token, 10);
+    }
+
+    private static JsonObject choice(String id, String label) {
+        var choice = new JsonObject();
+        choice.addProperty("id", id);
+        choice.addProperty("label", label);
+        return choice;
+    }
+
+    private static String string(JsonObject response, String field) throws IOException {
+        var value = response.get(field);
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) {
+            throw new IOException("Invalid dialogue response.");
+        }
+        return value.getAsString();
+    }
+
+    private void ensurePaired(UUID player, String name, boolean movementAvailable) throws IOException, InterruptedException {
         if (token == null) {
             if (code == null) throw new IOException("Pairing renewal required.");
             var pair = new JsonObject();
@@ -60,20 +133,19 @@ final class DialogueService {
             minecraft.addProperty("loader", "NeoForge");
             minecraft.addProperty("upstream", "6.0.2");
             minecraft.addProperty("npcId", npcId);
+            if (movementAvailable && !capabilities.isEmpty()) {
+                var available = new JsonArray();
+                capabilities.stream().sorted().forEach(available::add);
+                ready.add("actionCapabilities", available);
+            }
             ready.add("minecraft", minecraft);
-            post("ready", ready, issuedToken, 10);
+            var connection = post("ready", ready, issuedToken, 10).get("connection");
+            if (connection != null && connection.isJsonObject()) {
+                var permitted = connection.getAsJsonObject().get("activeActions");
+                actionGrant = permitted != null && permitted.isJsonArray() && !permitted.getAsJsonArray().isEmpty();
+            }
             token = issuedToken;
         }
-        var body = new JsonObject();
-        body.addProperty("requestId", UUID.randomUUID().toString());
-        body.addProperty("text", text);
-        var response = post("dialogue", body, token, 62);
-        var speech = response.get("speech");
-        if (speech == null || !speech.isJsonPrimitive() || !speech.getAsJsonPrimitive().isString()) {
-            throw new IOException("Invalid dialogue response.");
-        }
-        String line = speech.getAsString();
-        return safeText(line, 180) && !line.stripLeading().startsWith("/") ? line : "";
     }
 
     static boolean safeText(String text, int maxLength) {
