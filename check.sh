@@ -6,7 +6,7 @@ set -euo pipefail
 : "${IFSOUL_NEOFORGE_UPSTREAM:?Set IFSOUL_NEOFORGE_UPSTREAM to the pinned mod directory.}"
 cd "$(dirname "$0")"
 version="$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' release.json)"
-[[ "$version" == 0.7.0 ]]
+[[ "$version" == 0.8.0 ]]
 grep -RF "version" src/main/resources | grep -Fq "$version"
 libraries="$(cd "$IFSOUL_NEOFORGE_ROOT/libraries" && pwd)"
 upstream="$(cd "$IFSOUL_NEOFORGE_UPSTREAM" && pwd)"
