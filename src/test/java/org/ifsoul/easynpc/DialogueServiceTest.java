@@ -16,6 +16,11 @@ public final class DialogueServiceTest {
         assert Bridge.isCancellation("wait");
         assert !Bridge.isCancellation("wait here");
         var calls = new ArrayList<String>();
+        var nativeReadiness = new ArrayList<String>();
+        var currentlyDenied = """
+            {"connection":{"capability":{"providerId":"fixture","expiresAt":9999999999999,"allowedIntentIds":[],
+            "channelPolicy":{"channels":[{"channel":"private","listen":true,"speak":true}]}}}}
+            """;
         var actionRequests = new ArrayList<String>();
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/game/device/", exchange -> {
@@ -29,9 +34,17 @@ public final class DialogueServiceTest {
                 String response = switch (action) {
                     case "redeem" -> "{\"token\":\"" + "a".repeat(43) + "\"}";
                     case "ready" -> {
+                        if (body.has("capabilityManifest")) yield currentlyDenied;
                         if (!body.has("actionCapabilities")) yield "{}";
                         assert body.getAsJsonArray("actionCapabilities").get(0).getAsString().equals("movement");
                         yield "{\"connection\":{\"activeActions\":[\"movement\"]}}";
+                    }
+                    case "capabilities" -> {
+                        var manifest = body.getAsJsonObject("capabilityManifest");
+                        for (var capability : manifest.getAsJsonArray("capabilities")) {
+                            nativeReadiness.add(capability.getAsJsonObject().get("readiness").getAsString());
+                        }
+                        yield currentlyDenied;
                     }
                     case "dialogue" -> {
                         if (!body.has("operation")) yield "{\"speech\":\"Private reply\"}";
@@ -90,6 +103,12 @@ public final class DialogueServiceTest {
             }
             assert actionRequests.equals(List.of("action-check", "decide", "action-check", "action-outcome",
                 "action-check", "decide"));
+            var nativeService = new DialogueService("http://127.0.0.1:" + server.getAddress().getPort(),
+                "z".repeat(24), "fixture-npc", Set.of("movement"), Set.of());
+            var denied = nativeService.decide(user, "Fixture", "Act", options, "test-world", "fixture-npc");
+            assert "none".equals(denied.choice());
+            assert "Private reply".equals(denied.speech());
+            assert nativeReadiness.size() == 2 && nativeReadiness.stream().allMatch("ready"::equals);
             assert !DialogueService.safeText("bad\nline", 100);
             assert !DialogueService.safeText("bad\u202Eline", 100);
             assert !DialogueService.safeText("123", 2);

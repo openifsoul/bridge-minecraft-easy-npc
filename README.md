@@ -80,3 +80,43 @@ The server bridge uses the App device API directly. SDK integrators can use
 the [host integration guide](https://github.com/openifsoul/sdk/blob/main/docs/mineflayer-bridge.md)
 for bounded host adapters. The Java bridge does not require the JavaScript SDK
 at runtime.
+
+## App capability discovery
+
+The bridge reports one bounded approach using the configured NPC’s owned native ground navigation as `minecraft.come` when native game actions are enabled.
+Open the paired connection in App and allow the individual capability before
+the NPC can execute it. The player must still use the existing private NPC
+interaction and satisfy the game host's native conditions. Discovery and an
+App grant leave native game permissions in force. Offline or ineligible NPCs
+appear unavailable. A completed action is recorded from the host result.
+
+This bridge provides no resource collection, inventory or chest transfers,
+crafting, cooking, combat commands or building actions.
+
+App controls listening, reacting and speaking independently for the bridge's
+private channel. The selected Minecraft player remains the only reply
+recipient.
+
+
+### Shared dialogue channels
+
+Set `group-player-uuids` in the bridge properties to a comma-separated
+allowlist of player UUIDs to expose group dialogue. The approved player is
+always included. Set `public-dialogue=true` to expose world dialogue. Each
+channel also requires its own App permissions. Select the configured NPC
+using its existing interaction, then use `/ifsoul-easynpc-group <text>` or
+`/ifsoul-easynpc-public <text>`. The command is available to the bound player.
+
+Group output is sent to online allowlisted players in the same world. Public
+output is sent to current players in that world. Shared turns produce dialogue
+only. The host checks App delivery authorization before sending and keeps the
+destination on the requested channel.
+
+For an isolated native check, connect the approved player, an allowlisted
+listener and an unlisted observer in the same world. Select the NPC and enable
+the group controls in App. Check that only the first two clients receive the
+group reply. Turn on group Listen alone and check the App transcript for input
+without an NPC reply. Revoke Speak during a pending turn and check that the
+reply is withheld. Enable the public host switch and App permissions, then
+send a public turn while a fourth client is in another dimension. Check same-world
+delivery and confirm that a private-only test phrase is absent from shared replies.

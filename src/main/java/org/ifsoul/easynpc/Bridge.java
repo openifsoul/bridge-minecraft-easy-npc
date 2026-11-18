@@ -36,7 +36,10 @@ public final class Bridge {
     private final UUID playerId;
     private final String npcId;
     private final DialogueService service;
+    private final Set<UUID> groupMembers;
+    private final Set<String> sharedChannels;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService leaseWorker = Executors.newSingleThreadExecutor();
     private UUID selected;
     private long until;
     private long revision;
@@ -91,8 +94,20 @@ public final class Bridge {
             actionsEnabled = "true".equals(config.getProperty("game-actions"));
             npcId = config.getProperty("npc-id", "");
             if (npcId.isBlank()) throw new IllegalArgumentException("An exact NPC is required.");
+            var members = new java.util.HashSet<UUID>();
+            var group = config.getProperty("group-player-uuids", "").strip();
+            if (!group.isEmpty()) {
+                for (var value : group.split(",", -1)) members.add(UUID.fromString(value.strip()));
+                members.add(playerId);
+                if (members.size() < 2 || members.size() > 16) throw new IllegalArgumentException();
+            }
+            groupMembers = Set.copyOf(members);
+            var channels = new java.util.HashSet<String>();
+            if (!groupMembers.isEmpty()) channels.add("group");
+            if ("true".equals(config.getProperty("public-dialogue"))) channels.add("public");
+            sharedChannels = Set.copyOf(channels);
             service = new DialogueService(config.getProperty("service-origin", ""),
-                config.getProperty("pairing-code", ""), npcId, actionsEnabled ? Set.of("movement") : Set.of());
+                config.getProperty("pairing-code", ""), npcId, actionsEnabled ? Set.of("movement") : Set.of(), sharedChannels);
         } catch (IOException | IllegalArgumentException | NullPointerException error) {
             throw new IllegalStateException("Configure ifsoul-easynpc.properties before enabling the bridge.");
         }
@@ -114,6 +129,13 @@ public final class Bridge {
     }
 
     private void onCommands(RegisterCommandsEvent event) {
+        for (var channel : sharedChannels) {
+            event.getDispatcher().register(Commands.literal("ifsoul-easynpc-" + channel)
+                .requires(source -> source.getEntity() instanceof ServerPlayer player && playerId.equals(player.getUUID()))
+                .then(Commands.argument("text", StringArgumentType.greedyString())
+                    .executes(context -> converseShared(context.getSource().getPlayerOrException(), channel,
+                        StringArgumentType.getString(context, "text")))));
+        }
         event.getDispatcher().register(Commands.literal("ifsoul-easynpc")
             .requires(source -> source.getEntity() instanceof ServerPlayer player
                 && playerId.equals(player.getUUID()))
@@ -125,6 +147,61 @@ public final class Bridge {
     static boolean isCancellation(String text) {
         String command = text.strip();
         return "stop".equalsIgnoreCase(command) || "wait".equalsIgnoreCase(command);
+    }
+
+    private String audienceKey(String channel, String world) {
+        var definition = channel + ":" + world + ":" + ("group".equals(channel)
+            ? groupMembers.stream().map(UUID::toString).sorted().collect(java.util.stream.Collectors.joining(",")) : "");
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(definition.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    private int converseShared(ServerPlayer player, String channel, String text) {
+        var target = selected;
+        if (!sharedChannels.contains(channel) || !playerId.equals(player.getUUID()) || inFlight
+            || target == null || until - System.nanoTime() <= 0 || !DialogueService.safeText(text, 500)) return 0;
+        var level = player.serverLevel();
+        var npc = level.getEntity(target);
+        if (!validNpc(npc, player)) return 0;
+        var server = level.getServer();
+        var playerName = player.getGameProfile().getName();
+        var world = worldId(player);
+        var audience = audienceKey(channel, world);
+        var startedRevision = revision;
+        boolean actionReady = !choices(npc, player).isEmpty();
+        capabilityNpc = target;
+        inFlight = true;
+        worker.execute(() -> {
+            DialogueService.ChannelReply reply = null;
+            try {
+                reply = service.converseShared(playerId, playerName, text, world, target.toString(),
+                    channel, audience, actionReady);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            } catch (IOException | RuntimeException error) {
+                System.getLogger(Bridge.class.getName()).log(System.Logger.Level.WARNING,
+                    "IfSoul channel dialogue is unavailable.");
+            }
+            var result = reply;
+            server.execute(() -> {
+                inFlight = false;
+                var recipient = server.getPlayerList().getPlayer(playerId);
+                if (result == null || revision != startedRevision || recipient != player
+                    || recipient.serverLevel() != level || level.getEntity(target) != npc
+                    || !validNpc(npc, recipient)) return;
+                var speech = Component.literal(result.speech());
+                for (var listener : level.players()) {
+                    if ("public".equals(channel) || groupMembers.contains(listener.getUUID())) {
+                        listener.sendSystemMessage(speech);
+                    }
+                }
+            });
+        });
+        return 1;
     }
 
     private int converse(ServerPlayer player, String text) {
@@ -145,12 +222,14 @@ public final class Bridge {
         inFlight = true;
         var server = player.serverLevel().getServer();
         String playerName = player.getGameProfile().getName();
+        String callbackWorldId = worldId(player);
+        capabilityNpc = target;
         long startedRevision = revision;
         worker.execute(() -> {
             DialogueService.Decision decision;
             try {
-                decision = service.decide(playerId, playerName, text, options);
-                if (!"none".equals(decision.choice()) && !service.checkActions()) {
+                decision = service.decide(playerId, playerName, text, options, callbackWorldId, target.toString());
+                if (!"none".equals(decision.choice()) && !service.checkActions(decision)) {
                     service.outcome(decision.id(), decision.choice(), "interrupted");
                     decision = null;
                 }
@@ -227,7 +306,46 @@ public final class Bridge {
         nextCheck = System.nanoTime() + 1_000_000_000L;
     }
 
+    private long nextCapabilityHeartbeat;
+    private boolean capabilityHeartbeat;
+    private UUID capabilityNpc;
+
+    private static String worldId(ServerPlayer player) {
+        var name = player.getServer().getWorldData().getLevelName()
+            + ":" + player.serverLevel().dimension().location();
+        return UUID.nameUUIDFromBytes(name.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
+    private void tickCapabilities(net.minecraft.server.MinecraftServer server) {
+        if (capabilityNpc == null || capabilityHeartbeat || checkingAction
+            || System.nanoTime() - nextCapabilityHeartbeat < 0) return;
+        var player = server.getPlayerList().getPlayer(playerId);
+        var npc = player == null ? null : player.serverLevel().getEntity(capabilityNpc);
+        String currentWorld = player == null ? "" : worldId(player);
+        var navigation = npc == null ? null : actionNavigation(npc, player);
+        boolean available = navigation != null && (navigation.isDone() || movement != null);
+        boolean duringTurn = inFlight;
+        if (duringTurn && !(player != null && validNpc(npc, player))) return;
+        capabilityHeartbeat = true;
+        (duringTurn ? leaseWorker : worker).execute(() -> {
+            try {
+                if (duringTurn) service.keepCapabilityLeaseAlive(currentWorld);
+                else service.refreshCapabilities(currentWorld, available);
+            } catch (IOException ignored) {
+                // Authorization fails closed when the service lease expires.
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            } finally {
+                server.execute(() -> {
+                    capabilityHeartbeat = false;
+                    nextCapabilityHeartbeat = System.nanoTime() + 10_000_000_000L;
+                });
+            }
+        });
+    }
+
     private void onTick(ServerTickEvent.Post event) {
+        tickCapabilities(event.getServer());
         var active = movement;
         if (active == null) return;
         var player = event.getServer().getPlayerList().getPlayer(playerId);
@@ -245,7 +363,7 @@ public final class Bridge {
             worker.execute(() -> {
                 boolean authorized;
                 try {
-                    authorized = service.checkActions();
+                    authorized = service.checkActions(active.decision());
                 } catch (Exception error) {
                     if (error instanceof InterruptedException) Thread.currentThread().interrupt();
                     authorized = false;
@@ -309,5 +427,6 @@ public final class Bridge {
         revision++;
         finishMovement("interrupted");
         worker.shutdownNow();
+        leaseWorker.shutdownNow();
     }
 }

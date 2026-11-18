@@ -6,7 +6,7 @@ set -euo pipefail
 : "${IFSOUL_NEOFORGE_UPSTREAM:?Set IFSOUL_NEOFORGE_UPSTREAM to the pinned mod directory.}"
 cd "$(dirname "$0")"
 version="$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' release.json)"
-[[ "$version" == 0.8.0 ]]
+[[ "$version" == 0.9.0 ]]
 grep -RF "version" src/main/resources | grep -Fq "$version"
 libraries="$(cd "$IFSOUL_NEOFORGE_ROOT/libraries" && pwd)"
 upstream="$(cd "$IFSOUL_NEOFORGE_UPSTREAM" && pwd)"
@@ -31,6 +31,9 @@ trap 'rm -rf "$work"' EXIT
 "$JAVA_HOME/bin/jar" --create --date=2026-11-01T00:00:00Z --file build/ifsoul-easy-npc.jar -C "$work/classes" . -C src/main/resources .
 
 "$JAVA_HOME/bin/javac" -proc:none --release 21 -cp "$work/classes:$classpath" \
-  -d "$work/test-classes" src/test/java/org/ifsoul/easynpc/DialogueServiceTest.java
+  -d "$work/test-classes" src/test/java/org/ifsoul/easynpc/*.java
 "$JAVA_HOME/bin/java" -ea -cp "$work/test-classes:$work/classes:$classpath" \
   org.ifsoul.easynpc.DialogueServiceTest
+
+"$JAVA_HOME/bin/java" -ea -cp "$work/test-classes:$work/classes:$classpath" \
+  org.ifsoul.easynpc.SharedDialogueTest
